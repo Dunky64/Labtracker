@@ -1,6 +1,6 @@
 # Labtracker — Design (draft v0.1)
 
-Status: **draft, awaiting sign-off on open questions** (see bottom).
+Status: **v0.1 implemented.** The open questions are answered below.
 
 ## Goal
 A free, minimal-infrastructure clock-in/clock-out tracker for remote work.
@@ -62,8 +62,15 @@ Sheet row: `server_ts | user | key_id | nonce | ciphertext`. The Sheet never hol
 - **Dashboard views:** live status, today's full timeline, and week and month totals. Totals are worked out in the browser from the event log.
 - **Time zone:** everything is stored in UTC and shown as Europe/London.
 
-## Open questions
-1. Is the Mint machine work-issued, or does it handle the employer's sensitive data? If yes, IT approval is needed before installing.
-2. Is idle time subtracted from worked hours, or only displayed?
-3. Should the auto clock-out time be the last activity (recommended) or the moment it fires?
-4. Is it OK for the GitHub repo to be public? Free GitHub Pages requires a public repo. No secrets or data are kept in the repo.
+## Decisions (answered)
+1. The Mint machine is the user's personal laptop, so no IT approval is needed.
+2. Idle time is **shown** on the timeline but **not** deducted from hours worked.
+3. An auto clock-out uses the **last active** time.
+4. The repo is public. It holds no secrets or data.
+
+## Implementation notes (v0.1)
+- The user pastes only `LT_AUTH_KEY` into Script Properties. The read token is pushed by a signed `set_read_token` call, which also powers `labtracker revoke-link`.
+- `ping` (every 5 min while clocked in) updates `LT_LAST_SEEN`, so the dashboard can warn when the app has stopped reporting while clocked in.
+- **Sleep and shutdown gaps:** if a tick arrives late by at least the idle threshold, the gap is treated as away time. The prompt must then be answered: resuming activity does *not* resolve it. With no answer, an auto clock-out happens at the last tick before the gap. Clocking in resets the gap detector.
+- **Adjustments:** the original row is re-encrypted with `K_private`, using the same id and AAD key_id `p`, then a new shared row with `adjusted: true` is appended. A private note records the original time and the reason.
+- Appends are idempotent by row id, so retries from the offline queue never create duplicates.
