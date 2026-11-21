@@ -145,6 +145,27 @@ class HardeningTests(unittest.TestCase):
             finally:
                 os.environ["PATH"] = old
 
+    def test_setup_does_not_offer_broken_saved_address(self):
+        from unittest import mock
+        from labtracker import cli
+        store = mock.Mock()
+        store.load_config.return_value = {"dashboard_url": "cd ~/Labtracker && git pull && ./install.sh",
+                                          "user_id": "u1", "name": "T", "webapp_url": ""}
+        keys = Keys.generate()
+        prompts = []
+
+        def fake_ask(prompt, default=""):
+            prompts.append((prompt, default))
+            if prompt.startswith("Paste your Web App URL"):
+                return "https://script.google.com/macros/s/AKfycbTESTdeployment1234567890/exec"
+            return default
+        with mock.patch.object(cli, "_load", return_value=(store, store.load_config(), keys)), \
+             mock.patch.object(cli, "Keyring"), mock.patch.object(cli, "_ask", side_effect=fake_ask), \
+             mock.patch.object(cli, "_yes", return_value=True), mock.patch.object(cli, "Backend"):
+            self.assertEqual(cli._setup(), 0)
+        offered = dict(prompts)["Dashboard address"]
+        self.assertEqual(offered, "https://dunky64.github.io/Labtracker/")
+
     def test_dashboard_url_checks(self):
         from labtracker.cli import check_dashboard_url, dashboard_link
         self.assertEqual(check_dashboard_url("https://dunky64.github.io/Labtracker/"), (True, ""))

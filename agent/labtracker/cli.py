@@ -8,7 +8,7 @@ import urllib.parse
 from . import VERSION, crypto
 from .backend import Backend, BackendError, valid_webapp_url
 from .keystore import Keyring, KeyringError, Keys
-from .storage import Store
+from .storage import DEFAULT_CONFIG, Store
 
 HELP = f"""Labtracker {VERSION}
 
@@ -154,8 +154,11 @@ def _setup() -> int:
                 print("You can run `labtracker setup` again later.")
                 return 1
 
+    default_url = cfg["dashboard_url"]
+    if not check_dashboard_url(default_url)[0]:
+        default_url = DEFAULT_CONFIG["dashboard_url"]   # don't offer a broken saved value again
     while True:
-        url = _ask("Dashboard address", cfg["dashboard_url"])
+        url = _ask("Dashboard address", default_url)
         ok, warning = check_dashboard_url(url)
         if not ok:
             print(warning)
