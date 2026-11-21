@@ -2,13 +2,17 @@
 
 No keystrokes, window titles, screenshots or anything else are ever collected.
 """
-import shutil
+import os
 import subprocess
+
+# Fixed, root-owned locations only. Searching $PATH would let anything that can write to
+# ~/.local/bin (which comes first on Linux Mint) substitute its own program.
+TRUSTED_PATHS = ("/usr/bin/xprintidle", "/usr/local/bin/xprintidle")
 
 
 class IdleSource:
     def __init__(self):
-        self.path = shutil.which("xprintidle")
+        self.path = next((p for p in TRUSTED_PATHS if os.path.isfile(p) and os.access(p, os.X_OK)), None)
 
     @property
     def available(self) -> bool:

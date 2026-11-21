@@ -20,7 +20,7 @@ export function createBackend(props = {}) {
     getLastRow: () => data.length,
     getMaxRows: () => 1000,
     setFrozenRows: () => {},
-    getRange: (r, c, nr, nc) => ({
+    getRange: (r, c, nr, nc) => (typeof r === 'string' ? { setNumberFormat: () => {} } : {
       setNumberFormat: () => {},
       getValues: () => data.slice(r - 1, r - 1 + nr).map((row) => row.slice(c - 1, c - 1 + nc)),
       setValues: (vals) => vals.forEach((v, i) => {

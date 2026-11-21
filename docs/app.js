@@ -61,8 +61,11 @@ async function load() {
   if (!data.ok) throw new Error(data.error || 'error');
   const events = [];
   let bad = 0;
+  const seen = new Set();
   for (const row of data.rows) {
     if (state.cfg.id && row.user !== state.cfg.id) continue;
+    if (seen.has(row.id)) continue;   // a row duplicated inside the Sheet must not count twice
+    seen.add(row.id);
     try {
       const ev = await openRow(state.key, row);
       if (typeof ev.at === 'number' && typeof ev.type === 'string') events.push(ev);
@@ -395,6 +398,8 @@ async function start() {
     return;
   }
   $('who').textContent = state.cfg.name;
+  // Lets the employer notice if a link suddenly points at a different backend (a spoofed link).
+  $('source').textContent = `Data source ID ends …${state.cfg.url.split('/').at(-2).slice(-6)}`;
   if (state.cfg.name) document.title = `${state.cfg.name} · Labtracker`;
   try { state.key = await importKey(state.cfg.key); } catch {
     notice('This link is damaged', 'Part of the link is missing. Ask the employee to send it again.');

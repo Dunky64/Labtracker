@@ -200,10 +200,11 @@ class Tracker:
             res = self.backend.call("read")
         except BackendError as e:
             raise TrackerError(str(e)) from e
-        out = []
+        out, seen = [], set()
         for r in res.get("rows", []):
-            if r.get("user") != self.user:
-                continue
+            if r.get("user") != self.user or r.get("id") in seen:
+                continue   # a row copied inside the Sheet must not count twice
+            seen.add(r.get("id"))
             key = self.keys.share if r["key_id"] == SHARED else self.keys.private
             try:
                 ev = crypto.unseal(key, r["nonce"], r["ct"], r["user"], r["id"], r["key_id"])
