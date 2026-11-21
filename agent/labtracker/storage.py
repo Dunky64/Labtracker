@@ -6,6 +6,7 @@ All files are created readable by your user only (mode 600, folders 700).
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -34,7 +35,14 @@ def read_json(path: Path, default):
             return json.load(f)
     except FileNotFoundError:
         return default
-    except (OSError, ValueError):
+    except ValueError:
+        # Damaged file: keep it aside instead of silently overwriting it (it may hold unsent events).
+        try:
+            os.replace(path, path.with_name(f"{path.name}.damaged-{int(time.time())}"))
+        except OSError:
+            pass
+        return default
+    except OSError:
         return default
 
 

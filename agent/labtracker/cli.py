@@ -201,6 +201,10 @@ def cmd_link() -> int:
     store, cfg, keys = _load()
     _require_setup(cfg, keys)
     print(dashboard_link(cfg, keys))
+    try:
+        _ask("\nCopy it, then press Enter. The screen will be cleared")
+    finally:
+        wipe_terminal()
     return 0
 
 
@@ -216,6 +220,10 @@ def cmd_revoke() -> int:
     Keyring().save(new)
     print("The old link no longer works. New link:\n")
     print(dashboard_link(cfg, new))
+    try:
+        _ask("\nCopy it, then press Enter. The screen will be cleared")
+    finally:
+        wipe_terminal()
     return 0
 
 

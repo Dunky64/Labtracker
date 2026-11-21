@@ -168,6 +168,8 @@ class App:
         pending = self.tracker.pending()
         if pending:
             item(f"{pending} event(s) waiting to sync. Retry now", self.kick_sync)
+            if self.tracker.last_sync_error:
+                item("Why aren't they syncing?", lambda: self.error(self.tracker.last_sync_error))
         else:
             item("All changes synced")
         if not self.idle_available:
@@ -508,9 +510,10 @@ class FixWindow(Gtk.Window):
 
         def done(_res, err):
             if err:
-                self.status.set_text("Not saved.")
+                self.status.set_text("Not saved. Clicking Save again retries the same change safely.")
                 self.save_btn.set_sensitive(True)
                 self.app.error(err, self)
+                self._load()   # show what's actually stored now
                 return
             self.app.tracker.finish_adjust(op)
             self.app.refresh()

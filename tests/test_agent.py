@@ -358,3 +358,53 @@ class TrackerTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AuditTests(unittest.TestCase):
+    """Security-audit regressions (docs/ENGINEERING_REVIEW.md)."""
+
+    def test_key_separation(self):
+        keys = Keys.generate()
+        self.assertEqual(len({keys.share, keys.private, keys.auth}), 3)
+        n, c = crypto.seal(keys.private, {"type": "note", "text": "x"}, "u1", "r1", "p")
+        with self.assertRaises(Exception):      # the employer's share key can't read private rows
+            crypto.unseal(keys.share, n, c, "u1", "r1", "p")
+        with self.assertRaises(Exception):
+            crypto.unseal(keys.share, n, c, "u1", "r1", "s")
+
+    def test_nonces_are_unique(self):
+        k = crypto.new_key()
+        nonces = {crypto.seal(k, {"i": i}, "u", str(i), "s")[0] for i in range(5000)}
+        self.assertEqual(len(nonces), 5000)
+
+    def test_damaged_queue_is_kept_aside_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(Path(d) / "c", Path(d) / "s")
+            store.save_queue([{"id": "a"}])
+            store.queue_path.write_text("{not json")
+            self.assertEqual(store.load_queue(), [])
+            kept = list(store.st_dir.glob("queue.json.damaged-*"))
+            self.assertEqual(len(kept), 1)
+            self.assertEqual(kept[0].read_text(), "{not json")
+
+    def test_concurrent_syncs_in_one_app_send_each_batch_once(self):
+        import threading
+        calls = []
+        gate = threading.Event()
+
+        class SlowBackend:
+            def call(self, action, **data):
+                calls.append(action)
+                gate.wait(0.2)
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(Path(d) / "c", Path(d) / "s")
+            tr = Tracker(store, {"user_id": "u1"}, Keys.generate(), SlowBackend(), type("I", (), {"seconds": lambda s: 1.0})())
+            tr.add_note("hello")
+            ts = [threading.Thread(target=tr.sync) for _ in range(4)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            self.assertEqual(calls.count("append"), 1)

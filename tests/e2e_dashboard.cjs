@@ -26,6 +26,7 @@ const server = http.createServer((req, res) => {
   const frag = new URLSearchParams({ u: execUrl, k: seed.share, t: seed.token, id: seed.user, n: 'Alex Morgan' });
   const browser = await chromium.launch();
   const problems = [];
+  const replies = [];
   const shoot = async (name, opts, actions) => {
     const ctx = await browser.newContext(opts);
     const page = await ctx.newPage();
@@ -33,7 +34,9 @@ const server = http.createServer((req, res) => {
     page.on('pageerror', (e) => problems.push(`${name}: ${e.message}`));
     await page.route('https://script.google.com/**', async (route) => {
       const r = await fetch(`http://127.0.0.1:${harnessPort}/exec`, { method: 'POST', body: route.request().postData() });
-      await route.fulfill({ status: 200, contentType: 'application/json', body: await r.text(),
+      const text = await r.text();
+      replies.push(JSON.parse(text));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: text,
                             headers: { 'Access-Control-Allow-Origin': '*' } });
     });
     await page.goto(`${base}#${frag}`);
@@ -46,6 +49,13 @@ const server = http.createServer((req, res) => {
   };
   const desk = { viewport: { width: 1100, height: 800 }, deviceScaleFactor: 1 };
   const day = await shoot('day-light', desk);
+  // A second poll with nothing new must come back "unchanged" and leave the page intact.
+  replies.length = 0;
+  const polled = await shoot('poll-unchanged', desk, async (p) => {
+    await p.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await p.waitForTimeout(800);
+  });
+  const pollReplies = replies.slice();
   const week = await shoot('week-light', desk, async (p) => { await p.click('[data-view=week]'); await p.click('#prev'); });
   await shoot('month-dark', { ...desk, colorScheme: 'dark' }, async (p) => { await p.click('[data-view=month]'); });
   await shoot('phone-day', { viewport: { width: 390, height: 844 }, deviceScaleFactor: 1, isMobile: true });
@@ -59,6 +69,8 @@ const server = http.createServer((req, res) => {
     [/Clocked in|continued from previous day/.test(day), 'day timeline lists the shift start'],
     [/adjusted/.test(week), 'week view shows the adjusted marker'],
     [/needs a private link/.test(empty), 'no-link notice'],
+    [pollReplies.length >= 2 && pollReplies[0].rows && pollReplies.at(-1).unchanged === true && /Away from desk/.test(polled),
+     'second poll is "unchanged" (no sheet read) and the page keeps its data'],
     [problems.length === 0, `no console errors: ${problems.join(' | ')}`],
   ];
   await browser.close();

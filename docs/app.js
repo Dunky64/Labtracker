@@ -54,18 +54,28 @@ function readConfig() {
 // ---------------------------------------------------------------- fetch --
 async function load() {
   const res = await fetch(state.cfg.url, {
-    method: 'POST', body: JSON.stringify({ action: 'dashboard', token: state.cfg.token }),
+    method: 'POST',
+    // `ver` = the data version we already hold: if nothing shared changed, the backend answers
+    // "unchanged" without reading the sheet, which keeps one-minute polling cheap as data grows.
+    body: JSON.stringify({ action: 'dashboard', token: state.cfg.token, ver: state.ver || undefined }),
     credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer',
   });
   const data = await res.json();
   if (!data.ok) throw new Error(data.error || 'error');
+  state.serverSkew = (data.server_now || Date.now()) - Date.now();
+  state.fetchedAt = Date.now();
+  if (data.unchanged && state.ver === data.ver) {
+    state.lastSeen = Math.max(data.last_seen || 0, state.maxRowTs || 0);
+    return;
+  }
   const events = [];
-  let bad = 0;
+  let bad = 0, maxRowTs = 0;
   const seen = new Set();
   for (const row of data.rows) {
     if (state.cfg.id && row.user !== state.cfg.id) continue;
     if (seen.has(row.id)) continue;   // a row duplicated inside the Sheet must not count twice
     seen.add(row.id);
+    if (row.server_ts > maxRowTs) maxRowTs = row.server_ts;
     try {
       const ev = await openRow(state.key, row);
       if (typeof ev.at === 'number' && typeof ev.type === 'string') events.push(ev);
@@ -73,9 +83,9 @@ async function load() {
   }
   state.events = events;
   state.bad = bad;
-  state.serverSkew = (data.server_now || Date.now()) - Date.now();
-  state.lastSeen = Math.max(data.last_seen || 0, ...data.rows.map((r) => r.server_ts || 0));
-  state.fetchedAt = Date.now();
+  state.ver = data.ver;
+  state.maxRowTs = maxRowTs;
+  state.lastSeen = Math.max(data.last_seen || 0, maxRowTs);
 }
 
 const now = () => Date.now() + state.serverSkew;

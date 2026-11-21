@@ -75,9 +75,16 @@ test('adjust reseals the original privately and appends the replacement', () => 
   const o = all.find((r) => r.id === orig.id);
   assert.equal(o.key_id, 'p');
   assert.equal(o.ct, reseal.ct);
-  // Repeating is harmless; superseding a private row is refused.
-  assert.equal(be.post(sign(KEY, { action: 'adjust', supersedes: orig.id, reseal, row: repl })).already, true);
-  assert.equal(be.post(sign(KEY, { action: 'adjust', supersedes: orig.id, reseal, row: row() })).error, 'not_found');
+  // Repeating is harmless. A different correction of an already-corrected entry changes nothing
+  // and reports which replacement stands, so the client can tell the user to reload.
+  const again = be.post(sign(KEY, { action: 'adjust', supersedes: orig.id, reseal, row: repl }));
+  assert.equal(again.already, true);
+  assert.equal(again.replacement, repl.id);
+  const other = be.post(sign(KEY, { action: 'adjust', supersedes: orig.id, reseal, row: row() }));
+  assert.equal(other.already, true);
+  assert.equal(other.replacement, repl.id);
+  assert.equal(be.post(JSON.stringify({ action: 'dashboard', token: TOKEN })).rows.length, 1);
+  assert.equal(be.post(sign(KEY, { action: 'adjust', supersedes: crypto.randomUUID(), reseal, row: row() })).error, 'not_found');
 });
 
 test('read token must be long', () => {

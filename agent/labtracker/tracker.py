@@ -1,4 +1,5 @@
 """Core clock-in/out and idle logic. No GUI code here, so it can be tested directly."""
+import json
 import threading
 import time
 import uuid
@@ -10,6 +11,10 @@ SHARED, PRIVATE = "s", "p"
 CLOCK_TYPES = ("clock_in", "clock_out", "auto_clock_out")
 SLEEP_GAP_S = 90          # a tick this late means the computer was asleep or off
 PING_EVERY_S = 300
+BATCH_MAX_ROWS = 100
+# The backend refuses request bodies over 200,000 characters. Rows are sent as JSON inside a
+# signed JSON envelope (escaping adds ~5%), so keep each batch's rows well under that.
+BATCH_MAX_CHARS = 120_000
 MAX_NOTE = 2000
 
 DEFAULT_STATE = {
@@ -39,7 +44,10 @@ class Tracker:
         self.state = dict(DEFAULT_STATE)
         self.state.update(store.load_state())
         self._qlock = threading.Lock()
+        self._sync_lock = threading.Lock()   # one sync at a time per app, even across threads
         self._last_ping = 0.0
+        self.last_sync_error = None     # shown in the tray menu while events can't be sent
+        self._pending_adjust = None     # a correction being sent; retries reuse the same op
 
     # ------------------------------------------------------------ events --
     def _seal_event(self, etype, at, key_id=SHARED, **extra):
@@ -67,13 +75,33 @@ class Tracker:
         with self._qlock:
             return len(self.store.load_queue())
 
+    @staticmethod
+    def _batches(rows):
+        """Split queued rows into requests the backend accepts (by count AND by size)."""
+        batch, size = [], 0
+        for r in rows:
+            n = len(json.dumps(r)) + 2
+            if batch and (len(batch) >= BATCH_MAX_ROWS or size + n > BATCH_MAX_CHARS):
+                yield batch
+                batch, size = [], 0
+            batch.append(r)
+            size += n
+        if batch:
+            yield batch
+
     def sync(self) -> bool:
-        """Send queued events (safe to call from a worker thread). Returns True if fully synced."""
+        """Send queued events (safe to call from a worker thread). Returns True if fully synced.
+
+        Safe to retry at any point: the backend ignores rows it already has (by id), so a request
+        that was committed but whose reply was lost is never stored twice."""
+        with self._sync_lock:
+            return self._sync_locked()
+
+    def _sync_locked(self) -> bool:
         with self._qlock:
             snapshot = list(self.store.load_queue())
         try:
-            for i in range(0, len(snapshot), 100):
-                chunk = snapshot[i:i + 100]
+            for chunk in self._batches(snapshot):
                 self.backend.call("append", rows=chunk)
                 sent = {r["id"] for r in chunk}
                 with self._qlock:
@@ -82,8 +110,10 @@ class Tracker:
             if self.state.get("clocked_in") and now - self._last_ping >= PING_EVERY_S:
                 self.backend.call("ping")
                 self._last_ping = now
+            self.last_sync_error = None
             return True
-        except BackendError:
+        except BackendError as e:
+            self.last_sync_error = str(e)
             return False
 
     # ----------------------------------------------------------- actions --
@@ -223,7 +253,13 @@ class Tracker:
         return [x for x in items if x["key_id"] == PRIVATE and x["ev"]["type"] == "note"]
 
     def prepare_adjust(self, items, event_id, new_at, reason=""):
-        """Validate and encrypt a correction (main thread). Returns an op for send_adjust()."""
+        """Validate and encrypt a correction (main thread). Returns an op for send_adjust().
+
+        Asking again for the same correction while the previous attempt is unconfirmed (e.g. after
+        a network error) returns the SAME op, so a retry can never create a second replacement."""
+        key = (event_id, int(round(new_at * 1000)), reason)
+        if self._pending_adjust and self._pending_adjust["key"] == key:
+            return self._pending_adjust
         clocks = self.clock_events(items)
         idx = next((i for i, x in enumerate(clocks) if x["id"] == event_id), None)
         if idx is None:
@@ -243,19 +279,25 @@ class Tracker:
         row = self._seal_event(etype, new_at, adjusted=True)
         rn, rc = crypto.seal(self.keys.private, ev, self.user, event_id, PRIVATE)
         self._save()
-        return {"supersedes": event_id, "reseal": {"nonce": rn, "ct": rc}, "row": row,
-                "orig": ev, "etype": etype, "new_at": new_at, "reason": reason}
+        self._pending_adjust = {"key": key, "supersedes": event_id, "reseal": {"nonce": rn, "ct": rc},
+                                "row": row, "orig": ev, "etype": etype, "new_at": new_at, "reason": reason}
+        return self._pending_adjust
 
     def send_adjust(self, op):
         """Network part (safe in a worker thread)."""
         try:
-            self.backend.call("adjust", supersedes=op["supersedes"], reseal=op["reseal"], row=op["row"])
+            res = self.backend.call("adjust", supersedes=op["supersedes"], reseal=op["reseal"], row=op["row"])
         except BackendError as e:
             raise TrackerError(str(e)) from e
+        if res.get("replacement") not in (None, op["row"]["id"]):
+            self._pending_adjust = None
+            raise TrackerError("This entry had already been corrected by an earlier attempt, so nothing "
+                               "was changed. Reload the list to see the current time.")
 
     def finish_adjust(self, op):
         """Bookkeeping after a successful send (main thread)."""
         from .timeutil import fmt_dt
+        self._pending_adjust = None
         orig, etype, new_at = op["orig"], op["etype"], op["new_at"]
         if (self.state["clocked_in"] and etype == "clock_in"
                 and abs((self.state["session_start"] or 0) * 1000 - orig["at"]) < 1000):
