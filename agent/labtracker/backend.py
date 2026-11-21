@@ -50,6 +50,32 @@ def explain_google_reply(code, text: str) -> str:
     return f"Unexpected reply from Google ({code})."
 
 
+def explain_backend_error(result: dict) -> str:
+    err = result.get("error", "unknown")
+    if err == "not_configured":
+        return ("The Google script can't find a valid LT_AUTH_KEY. In Project Settings -> Script "
+                "Properties, the property must be named exactly LT_AUTH_KEY and the value must be the "
+                "whole key (44 characters, ending in =). Then click 'Save script properties'.")
+    if err == "bad_signature":
+        return ("LT_AUTH_KEY in Script Properties doesn't match the key on this laptop. Click 'Edit "
+                "script properties', clear the value completely, paste the key exactly as shown by "
+                "setup (first character to the final =), and save. Tip: in the editor, run "
+                "labtrackerSelfTest to see the first and last characters Google has stored.")
+    if err == "clock":
+        skew = ""
+        if isinstance(result.get("server_now"), (int, float)):
+            mins = round((time.time() * 1000 - result["server_now"]) / 60000)
+            skew = f" (it's {abs(mins)} min {'ahead' if mins > 0 else 'behind'})"
+        return (f"Your laptop's clock is wrong{skew}. Open System Settings -> Date & Time and turn on "
+                "network time, then try again.")
+    if err == "replayed":
+        return "A duplicate request was refused. Just try again."
+    if err == "unauthorized":
+        return ("The backend rejected the request. Check LT_AUTH_KEY in Script Properties and that "
+                "your computer's clock is correct.")
+    return f"The backend refused the request ({err})."
+
+
 class _StrictRedirect(urllib.request.HTTPRedirectHandler):
     """Apps Script answers with a redirect to googleusercontent.com. Refuse any other host."""
 
@@ -101,10 +127,5 @@ class Backend:
         except ValueError as e:
             raise BackendError(explain_google_reply(200, raw[:20000].decode("utf-8", "replace"))) from e
         if not result.get("ok"):
-            err = result.get("error", "unknown")
-            if err == "unauthorized":
-                raise BackendError(
-                    "The backend rejected the request. Check LT_AUTH_KEY in Script Properties "
-                    "and that your computer's clock is correct.")
-            raise BackendError(f"The backend refused the request ({err}).")
+            raise BackendError(explain_backend_error(result))
         return result

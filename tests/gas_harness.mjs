@@ -31,7 +31,7 @@ export function createBackend(props = {}) {
   };
   const cache = new Map();
   const ctx = {
-    Date, Math, JSON, String, Number, Array, Object,
+    Date, Math, JSON, String, Number, Array, Object, Logger: { log: (m) => (globalThis.__log = (globalThis.__log || []).concat(m)) },
     SpreadsheetApp: { getActiveSpreadsheet: () => ({
       getSheetByName: () => (sheetExists ? sheet : null),
       insertSheet: () => { sheetExists = true; return sheet; },
@@ -60,6 +60,7 @@ export function createBackend(props = {}) {
   return {
     props, data,
     post: (body) => JSON.parse(ctx.doPost({ postData: { contents: body } }).getContent()),
+    run: (fn) => ctx[fn](),
   };
 }
 
