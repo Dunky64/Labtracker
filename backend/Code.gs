@@ -27,6 +27,7 @@ var MAX_ROWS_PER_CALL = 200;
 var MAX_CT = 12000;           // characters of base64 ciphertext per row
 var MAX_SKEW_MS = 5 * 60 * 1000;
 var NONCE_TTL_S = 15 * 60;
+var LOCK_WAIT_MS = 20000;
 
 var RE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 var RE_USER = /^[a-z0-9_-]{1,32}$/;
@@ -50,12 +51,14 @@ function doPost(e) {
     if (v.error) return reply_({ ok: false, error: v.error, server_now: Date.now() });
     var payload = v.payload;
 
+    // Every signed request runs under the script lock, so writes never interleave.
     var lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    if (!lock.tryLock(LOCK_WAIT_MS)) return reply_({ ok: false, error: 'busy' });
     try {
-      PropertiesService.getScriptProperties().setProperty('LT_LAST_SEEN', String(Date.now()));
+      // Replay check inside the lock: two copies of one request can't both pass.
+      if (!claimNonce_(req.nonce)) return reply_({ ok: false, error: 'replayed', server_now: Date.now() });
       switch (payload.action) {
-        case 'ping': return reply_({ ok: true, server_ts: Date.now() });
+        case 'ping': markSeen_(); return reply_({ ok: true, server_ts: Date.now() });
         case 'append': return reply_(append_(payload));
         case 'adjust': return reply_(adjust_(payload));
         case 'read': return reply_(readAll_());
@@ -63,6 +66,9 @@ function doPost(e) {
         default: return reply_({ ok: false, error: 'bad_request' });
       }
     } finally {
+      // Apply pending sheet writes BEFORE another execution can take the lock; otherwise it
+      // may read a stale sheet (missing a duplicate, or writing into the same "next" row).
+      SpreadsheetApp.flush();
       lock.releaseLock();
     }
   } catch (err) {
@@ -94,15 +100,32 @@ function verify_(req) {
   try { given = Utilities.base64DecodeWebSafe(req.sig); } catch (e) { return { error: 'bad_signature' }; }
   if (!bytesEqual_(expected, given)) return { error: 'bad_signature' };
 
-  // Replay protection: each nonce may be used once.
-  var cache = CacheService.getScriptCache();
-  var nk = 'n:' + req.nonce;
-  if (cache.get(nk)) return { error: 'replayed' };
-  cache.put(nk, '1', NONCE_TTL_S);
-
   var payload = JSON.parse(req.payload);
   if (!payload || typeof payload.action !== 'string') return { error: 'bad_request' };
   return { payload: payload };
+}
+
+/** Replay protection: each nonce works once (call while holding the script lock). */
+function claimNonce_(nonce) {
+  var cache = CacheService.getScriptCache();
+  var nk = 'n:' + nonce;
+  if (cache.get(nk)) return false;
+  cache.put(nk, '1', NONCE_TTL_S);
+  return true;
+}
+
+/**
+ * "App last reported" for the dashboard. Updated only by pings and shared writes, which happen
+ * while clocked in, so private activity (notes, opening My notes) leaves no visible trace.
+ */
+function markSeen_() {
+  PropertiesService.getScriptProperties().setProperty('LT_LAST_SEEN', String(Date.now()));
+}
+
+/** Bumped whenever the shared (employer-visible) data changes; lets dashboard polls skip work. */
+function bumpSharedVersion_() {
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('LT_SHARED_VER', String(Number(props.getProperty('LT_SHARED_VER') || 0) + 1));
 }
 
 function authKey_() {
@@ -174,6 +197,19 @@ function rows_(sh) {
   return sh.getRange(2, 1, n, HEADERS.length).getValues();
 }
 
+/** One column (1-based) of all data rows, flattened. Much cheaper than reading whole rows. */
+function column_(sh, col) {
+  var n = sh.getLastRow() - 1;
+  if (n <= 0) return [];
+  return sh.getRange(2, col, n, 1).getValues().map(function (r) { return r[0]; });
+}
+
+/** Write whole rows at `at` (1-based), with columns B-H forced to plain text first. */
+function writeRows_(sh, at, values) {
+  sh.getRange(at, 2, values.length, HEADERS.length - 1).setNumberFormat('@');
+  sh.getRange(at, 1, values.length, HEADERS.length).setValues(values);
+}
+
 function validRow_(r) {
   return r && RE_ID.test(r.id) && RE_USER.test(r.user) && (r.key_id === 's' || r.key_id === 'p') &&
     typeof r.nonce === 'string' && RE_B64.test(r.nonce) && r.nonce.length <= 32 &&
@@ -188,16 +224,19 @@ function append_(p) {
 
   var sh = sheet_();
   var existing = {};
-  rows_(sh).forEach(function (r) { existing[r[COL.id]] = true; });
+  column_(sh, COL.id + 1).forEach(function (id) { existing[id] = true; });
 
   var now = Date.now();
   var out = [];
+  var shared = false;
   p.rows.forEach(function (r) {
     if (existing[r.id]) return;            // idempotent: retries never duplicate
     existing[r.id] = true;
+    if (r.key_id === 's') shared = true;
     out.push([now, r.id, r.user, r.key_id, r.nonce, r.ct, '', '']);
   });
-  if (out.length) sh.getRange(sh.getLastRow() + 1, 1, out.length, HEADERS.length).setValues(out);
+  if (out.length) writeRows_(sh, sh.getLastRow() + 1, out);
+  if (shared) { bumpSharedVersion_(); markSeen_(); }
   return { ok: true, inserted: out.length, server_ts: now };
 }
 
@@ -205,6 +244,10 @@ function append_(p) {
  * Replace an event with a corrected one.
  * The original row is re-encrypted by the desktop app with the owner's PRIVATE key,
  * so the employer can no longer read the original value; the new row is shared.
+ *
+ * Crash-safe and idempotent: the replacement is written FIRST, then the original is resealed.
+ * Any retry (same or different replacement id) finishes whichever step is missing and never
+ * adds a second replacement, so an interrupted correction can't lose or duplicate an entry.
  */
 function adjust_(p) {
   if (!RE_ID.test(p.supersedes) || !p.reseal || !validRow_(p.row) || p.row.key_id !== 's') {
@@ -214,25 +257,33 @@ function adjust_(p) {
   if (!validRow_(re)) return { ok: false, error: 'bad_request' };
 
   var sh = sheet_();
-  var all = rows_(sh);
-  var now = Date.now();
-  for (var i = 0; i < all.length; i++) {
-    if (all[i][COL.id] === p.row.id) return { ok: true, already: true };
-  }
-  var idx = -1;
-  for (var j = 0; j < all.length; j++) {
-    if (all[j][COL.id] === p.supersedes) { idx = j; break; }
-  }
-  if (idx < 0 || all[idx][COL.key_id] !== 's') return { ok: false, error: 'not_found' };
+  var ids = column_(sh, COL.id + 1);
+  var idx = ids.indexOf(p.supersedes);
+  if (idx < 0) return { ok: false, error: 'not_found' };
+  var orig = sh.getRange(idx + 2, 1, 1, HEADERS.length).getValues()[0];
+  if (orig[COL.user] !== p.row.user) return { ok: false, error: 'bad_request' };
 
-  var r = all[idx];
-  sh.getRange(idx + 2, 1, 1, HEADERS.length).setValues([[
-    r[COL.server_ts], r[COL.id], r[COL.user], 'p', re.nonce, re.ct, r[COL.supersedes], now
-  ]]);
-  sh.getRange(sh.getLastRow() + 1, 1, 1, HEADERS.length).setValues([[
-    now, p.row.id, p.row.user, 's', p.row.nonce, p.row.ct, p.supersedes, ''
-  ]]);
-  return { ok: true, server_ts: now };
+  var replIdx = column_(sh, COL.supersedes + 1).indexOf(p.supersedes);
+  var hasReplacement = replIdx >= 0;
+  if (!hasReplacement && orig[COL.key_id] !== 's') return { ok: false, error: 'not_found' };
+  var replacement = hasReplacement ? ids[replIdx] : p.row.id;
+
+  var now = Date.now();
+  var changed = false;
+  if (!hasReplacement) {
+    if (ids.indexOf(p.row.id) >= 0) return { ok: false, error: 'bad_request' };   // id reused
+    writeRows_(sh, sh.getLastRow() + 1, [[now, p.row.id, p.row.user, 's', p.row.nonce, p.row.ct, p.supersedes, '']]);
+    changed = true;
+  }
+  if (orig[COL.key_id] === 's') {
+    writeRows_(sh, idx + 2, [[orig[COL.server_ts], orig[COL.id], orig[COL.user], 'p', re.nonce, re.ct,
+                              orig[COL.supersedes], now]]);
+    changed = true;
+  }
+  if (changed) bumpSharedVersion_();
+  // `replacement` tells the client which entry now stands; if it isn't the one it sent, an
+  // earlier attempt already corrected this entry and the client should reload.
+  return { ok: true, replacement: replacement, already: !changed, server_ts: now };
 }
 
 function readAll_() {
@@ -254,10 +305,16 @@ function setReadToken_(p) {
 /* ----------------------------------------------------------- dashboard -- */
 
 function dashboard_(req) {
-  var props = PropertiesService.getScriptProperties();
-  var token = props.getProperty('LT_READ_TOKEN');
+  var props = PropertiesService.getScriptProperties().getProperties();   // one quota unit
+  var token = props.LT_READ_TOKEN;
   if (!token || typeof req.token !== 'string' || !stringsEqual_(req.token, token)) {
     return { ok: false, error: 'unauthorized' };
+  }
+  var ver = String(props.LT_SHARED_VER || '0');
+  var lastSeen = Number(props.LT_LAST_SEEN || 0);
+  // Nothing shared has changed since the caller's last full load: skip reading the sheet.
+  if (typeof req.ver === 'string' && req.ver === ver) {
+    return { ok: true, unchanged: true, ver: ver, last_seen: lastSeen, server_now: Date.now() };
   }
 
   // Only shared rows. Private rows (notes, original values of adjusted entries)
@@ -268,8 +325,7 @@ function dashboard_(req) {
     rows.push({ server_ts: Number(r[COL.server_ts]), id: r[COL.id], user: r[COL.user],
                 nonce: r[COL.nonce], ct: r[COL.ct] });
   });
-  var lastSeen = Number(props.getProperty('LT_LAST_SEEN') || 0);
-  return { ok: true, rows: rows, last_seen: lastSeen, server_now: Date.now() };
+  return { ok: true, rows: rows, ver: ver, last_seen: lastSeen, server_now: Date.now() };
 }
 
 function reply_(obj) {

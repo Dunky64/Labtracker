@@ -195,8 +195,10 @@ Labtracker is built for people who handle sensitive work data, so it collects as
 - **Malware running as you on your laptop.** While you're logged in, any program you run can read the login keyring without a prompt; that's how Linux keyrings work. Only install software from Mint's Software Manager or sources you trust, and don't run scripts you don't understand.
 - **Someone in your Google account.** They can't read your records, but the signing key is in Script Properties, so they could add fake entries or delete rows. Turn on two-step verification at myaccount.google.com/security.
 - **Someone in your GitHub account.** The app updates and the dashboard both come from this repository, so a malicious change could steal keys. Turn on two-factor authentication on GitHub, and protect the `main` branch (Settings → Branches → require a pull request before merging).
-- Anyone who has your dashboard link can see your timeline until you run `labtracker revoke-link`. (Someone who saved a copy of the data earlier could still read that copy.)
+- Anyone who has your dashboard link can see your timeline until you run `labtracker revoke-link`. Revoking replaces the access token, **not the encryption key**: someone who had the old link can't fetch new data, but if they ever got the encrypted data another way, they could still read it. Replacing the key means starting with new keys (old records become unreadable). That's a known limitation.
 - These are **self-reported** records, owned by you. They're useful and transparent, but they aren't a tamper-proof legal record.
+
+**What the employer can infer:** the dashboard shows your shared entries and when the app last reported while you were clocked in. Private notes, opening "My notes" and corrections' original times leave no visible trace.
 
 **Don't share the Google Sheet with anyone.** It doesn't need to be shared. The dashboard reads the data through your script.
 
@@ -210,7 +212,7 @@ Run these in a terminal (as `~/.local/bin/labtracker …`, or just `labtracker �
 |---|---|
 | `labtracker setup` | First-time setup, or change settings |
 | `labtracker status` | Shows whether you're clocked in and whether anything is waiting to sync |
-| `labtracker link` | Prints the employer dashboard link |
+| `labtracker link` | Prints the employer dashboard link (the screen is cleared after you press Enter) |
 | `labtracker revoke-link` | Stops the old dashboard link working and makes a new one |
 | `labtracker backup-keys` | Shows your recovery code again |
 | `labtracker restore-keys` | Restores your keys on a new laptop, using your recovery code |
@@ -230,6 +232,10 @@ If [`backend/Code.gs`](backend/Code.gs) changed, also update the Google script:
 2. Go to **Deploy → Manage deployments → ✏️ Edit**, set Version to **New version**, then click **Deploy**.
 
 Your Web App URL stays the same.
+
+> **November 2026 review update:** this release changes `backend/Code.gs`. Update the Google script
+> (steps above) *and* the laptop app. The new dashboard works with the old script, but only the new
+> script has the crash-safe corrections and the cheaper polling.
 
 **Uninstall:** `cd ~/Labtracker && ./uninstall.sh`. Your records stay in your Google Sheet.
 
@@ -251,6 +257,20 @@ Your Web App URL stays the same.
 | "Idle detection unavailable" | Run `sudo apt install xprintidle`. Labtracker needs an X11 session, which is the default on Linux Mint. |
 | The dashboard says "This link no longer works" | The link was revoked. Run `labtracker link` and send your employer the current one. |
 | I lost my recovery code | Run `labtracker backup-keys` on the laptop that still has your keys. |
+| The menu says events are waiting to sync | Click **Why aren't they syncing?** in the tray menu. The usual causes are being offline, a wrong laptop clock, or a changed `LT_AUTH_KEY`. Nothing is lost; events are sent once the cause is fixed. |
+
+## Reliability and limits
+
+- **Use one laptop at a time.** Two laptops with the same keys both work, but each tracks its own
+  clocked-in state, so their entries can interleave confusingly.
+- **Nothing is lost offline.** Events wait, encrypted, on the laptop and are sent once you're back
+  online. Retries never create duplicates.
+- **Corrections are crash-safe.** If saving a correction is interrupted, saving again finishes it.
+  It never loses or duplicates the entry.
+- **Size.** Typical use adds about 10 to 15 rows per working day (roughly 3,000 a year). The design is
+  comfortable into the tens of thousands of rows. Beyond about 20,000 rows, a dashboard refresh after
+  a change downloads several megabytes, so start a fresh spreadsheet each year or two (see
+  `docs/ENGINEERING_REVIEW.md`). Polls when nothing has changed stay cheap at any size.
 
 **iPhone:** not supported yet. A simple clock-in/clock-out page for the iPhone home screen is planned.
 It won't be able to detect when you're away, because iOS doesn't allow that.
@@ -272,8 +292,8 @@ tests/      Unit, security and end-to-end tests
 Run the tests (needs Python 3.12 with `python3-gi` and `python3-cryptography`, Node 18+ and Playwright):
 
 ```bash
-python3 -m unittest discover -s tests      # tracker logic, crypto, file permissions
-node --test tests/test_backend.mjs         # backend auth, replay, validation, privacy
+python3 -m unittest discover -s tests      # tracker logic, crypto, permissions, reliability (HTTP to the harness)
+node --test tests/test_backend.mjs tests/test_review.mjs   # backend auth, replay, privacy, crash-safety, scaling
 # End to end: local fake Apps Script, real agent code, real dashboard in Chromium
 KEY=$(python3 -c "import secrets,base64;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())")
 node tests/gas_harness.mjs 8765 "$KEY" & sleep 1
@@ -281,4 +301,6 @@ python3 tests/e2e_seed.py 8765 "$KEY" > /tmp/seed.json
 node tests/e2e_dashboard.cjs 8765 /tmp/seed.json /tmp
 ```
 
-The design decisions are written up in [`docs/DESIGN.md`](docs/DESIGN.md).
+Testing against a real (separate, disposable) Google deployment: [`docs/LIVE_TESTING.md`](docs/LIVE_TESTING.md).
+The design decisions are in [`docs/DESIGN.md`](docs/DESIGN.md); the November 2026 engineering review is in
+[`docs/ENGINEERING_REVIEW.md`](docs/ENGINEERING_REVIEW.md).

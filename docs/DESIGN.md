@@ -74,3 +74,10 @@ Sheet row: `server_ts | user | key_id | nonce | ciphertext`. The Sheet never hol
 - **Sleep and shutdown gaps:** if a tick arrives late by at least the idle threshold, the gap is treated as away time. The prompt must then be answered: resuming activity does *not* resolve it. With no answer, an auto clock-out happens at the last tick before the gap. Clocking in resets the gap detector.
 - **Adjustments:** the original row is re-encrypted with `K_private`, using the same id and AAD key_id `p`, then a new shared row with `adjusted: true` is appended. A private note records the original time and the reason.
 - Appends are idempotent by row id, so retries from the offline queue never create duplicates.
+
+## Changes from the November 2026 engineering review
+- **Concurrency:** all signed requests run under the script lock. `SpreadsheetApp.flush()` runs before the lock is released. The replay (nonce) check happens inside the lock. A lock timeout returns `busy`, which the client retries.
+- **Corrections** write the replacement first, then reseal the original. Any retry completes the missing step and never adds a second replacement; the response names the `replacement` that stands.
+- **Duplicate detection** reads only the id column. Each write formats its target range as text before writing values.
+- **Dashboard polling** sends the data version (`ver`). `LT_SHARED_VER` changes only when shared data changes, so an unchanged poll reads no rows. `LT_LAST_SEEN` is updated only by `ping` and shared appends, so private activity is invisible to the employer.
+- **Agent:** sync batches are limited by size and count, only one sync runs at a time, the last sync error is shown in the tray menu, correction retries reuse the same operation, and a damaged queue file is kept aside instead of being overwritten.

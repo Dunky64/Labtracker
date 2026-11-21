@@ -68,6 +68,8 @@ def explain_backend_error(result: dict) -> str:
             skew = f" (it's {abs(mins)} min {'ahead' if mins > 0 else 'behind'})"
         return (f"Your laptop's clock is wrong{skew}. Open System Settings -> Date & Time and turn on "
                 "network time, then try again.")
+    if err == "busy":
+        return "Google was busy with another request. It will be retried automatically."
     if err == "replayed":
         return "A duplicate request was refused. Just try again."
     if err == "unauthorized":
