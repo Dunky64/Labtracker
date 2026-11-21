@@ -15,20 +15,25 @@ test('rejects unsigned, wrongly signed, stale and replayed requests', () => {
   assert.equal(be.post('{}').ok, false);
   assert.equal(be.post('not json').error, 'bad_request');
   const wrongKey = crypto.randomBytes(32).toString('base64url');
-  assert.equal(be.post(sign(wrongKey, { action: 'ping' })).error, 'unauthorized');
-  assert.equal(be.post(sign(KEY, { action: 'ping' }, { ts: Date.now() - 10 * 60e3 })).error, 'unauthorized');
+  assert.equal(be.post(sign(wrongKey, { action: 'ping' })).error, 'bad_signature');
+  assert.equal(be.post(sign(KEY, { action: 'ping' }, { ts: Date.now() - 10 * 60e3 })).error, 'clock');
   const body = sign(KEY, { action: 'ping' });
   assert.equal(be.post(body).ok, true);
-  assert.equal(be.post(body).error, 'unauthorized', 'replay must fail');
+  assert.equal(be.post(body).error, 'replayed', 'replay must fail');
   // Tampered payload with the original signature.
   const b = JSON.parse(sign(KEY, { action: 'ping' }));
   b.payload = JSON.stringify({ action: 'read' });
-  assert.equal(be.post(JSON.stringify(b)).error, 'unauthorized');
+  assert.equal(be.post(JSON.stringify(b)).error, 'bad_signature');
+});
+
+test('a key pasted with spaces or a line break still works; a truncated key is reported', () => {
+  assert.equal(createBackend({ LT_AUTH_KEY: `  ${KEY}\n` }).post(sign(KEY, { action: 'ping' })).ok, true);
+  assert.equal(createBackend({ LT_AUTH_KEY: KEY.slice(10) }).post(sign(KEY, { action: 'ping' })).error, 'not_configured');
 });
 
 test('nothing works before LT_AUTH_KEY is configured', () => {
   const be = createBackend({});
-  assert.equal(be.post(sign(KEY, { action: 'ping' })).error, 'unauthorized');
+  assert.equal(be.post(sign(KEY, { action: 'ping' })).error, 'not_configured');
 });
 
 test('append is validated and idempotent', () => {
@@ -78,4 +83,16 @@ test('adjust reseals the original privately and appends the replacement', () => 
 test('read token must be long', () => {
   const be = fresh();
   assert.equal(be.post(sign(KEY, { action: 'set_read_token', token: 'short' })).error, 'bad_request');
+});
+
+test('labtrackerSelfTest reports the key without revealing it', () => {
+  globalThis.__log = [];
+  createBackend({ LT_AUTH_KEY: KEY }).run('labtrackerSelfTest');
+  const out = globalThis.__log.join('\n');
+  assert.match(out, /44 characters/);
+  assert.match(out, /Key format OK/);
+  assert.ok(!out.includes(KEY.slice(4, -4)), 'must not log the middle of the key');
+  globalThis.__log = [];
+  createBackend({}).run('labtrackerSelfTest');
+  assert.match(globalThis.__log.join('\n'), /MISSING/);
 });

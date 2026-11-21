@@ -43,8 +43,9 @@ function doPost(e) {
     // Unsigned, read-only request from the employer dashboard.
     if (req && req.action === 'dashboard') return reply_(dashboard_(req));
 
-    var payload = verify_(req);
-    if (!payload) return reply_({ ok: false, error: 'unauthorized' });
+    var v = verify_(req);
+    if (v.error) return reply_({ ok: false, error: v.error, server_now: Date.now() });
+    var payload = v.payload;
 
     var lock = LockService.getScriptLock();
     lock.waitLock(20000);
@@ -69,33 +70,65 @@ function doPost(e) {
 
 /* ---------------------------------------------------------------- auth -- */
 
+/**
+ * Returns {payload} or {error}. Error codes say which check failed, so setup problems are easy
+ * to fix: not_configured (no LT_AUTH_KEY), clock (computer clock off by > 5 min),
+ * bad_signature (LT_AUTH_KEY doesn't match the laptop's key), replayed, bad_request.
+ */
 function verify_(req) {
   if (!req || req.v !== 1 || typeof req.ts !== 'number' || typeof req.nonce !== 'string' ||
-      typeof req.payload !== 'string' || typeof req.sig !== 'string') return null;
-  if (!RE_B64.test(req.nonce) || req.nonce.length < 16 || req.nonce.length > 64) return null;
-  if (!RE_B64.test(req.sig)) return null;
-  if (Math.abs(Date.now() - req.ts) > MAX_SKEW_MS) return null;
+      typeof req.payload !== 'string' || typeof req.sig !== 'string') return { error: 'bad_request' };
+  if (!RE_B64.test(req.nonce) || req.nonce.length < 16 || req.nonce.length > 64) return { error: 'bad_request' };
+  if (!RE_B64.test(req.sig)) return { error: 'bad_request' };
 
-  var keyB64 = PropertiesService.getScriptProperties().getProperty('LT_AUTH_KEY');
-  if (!keyB64) return null;
-  var key = Utilities.base64DecodeWebSafe(keyB64.trim());
-  if (key.length < 32) return null;
+  var key = authKey_();
+  if (!key) return { error: 'not_configured' };
+  if (Math.abs(Date.now() - req.ts) > MAX_SKEW_MS) return { error: 'clock' };
 
   var msg = 'v1\n' + req.ts + '\n' + req.nonce + '\n' + req.payload;
   var expected = Utilities.computeHmacSha256Signature(Utilities.newBlob(msg).getBytes(), key);
   var given;
-  try { given = Utilities.base64DecodeWebSafe(req.sig); } catch (e) { return null; }
-  if (!bytesEqual_(expected, given)) return null;
+  try { given = Utilities.base64DecodeWebSafe(req.sig); } catch (e) { return { error: 'bad_signature' }; }
+  if (!bytesEqual_(expected, given)) return { error: 'bad_signature' };
 
   // Replay protection: each nonce may be used once.
   var cache = CacheService.getScriptCache();
   var nk = 'n:' + req.nonce;
-  if (cache.get(nk)) return null;
+  if (cache.get(nk)) return { error: 'replayed' };
   cache.put(nk, '1', NONCE_TTL_S);
 
   var payload = JSON.parse(req.payload);
-  if (!payload || typeof payload.action !== 'string') return null;
-  return payload;
+  if (!payload || typeof payload.action !== 'string') return { error: 'bad_request' };
+  return { payload: payload };
+}
+
+function authKey_() {
+  var keyB64 = PropertiesService.getScriptProperties().getProperty('LT_AUTH_KEY');
+  if (!keyB64) return null;
+  try {
+    var key = Utilities.base64DecodeWebSafe(String(keyB64).replace(/\s+/g, ''));
+    return key.length === 32 ? key : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Setup helper: choose "labtrackerSelfTest" in the editor's function list and click Run.
+ * The log shows whether LT_AUTH_KEY is present and its first/last characters, so you can
+ * compare it with the key shown by `labtracker setup` without revealing it in full.
+ */
+function labtrackerSelfTest() {
+  var raw = PropertiesService.getScriptProperties().getProperty('LT_AUTH_KEY');
+  if (!raw) {
+    Logger.log('LT_AUTH_KEY is MISSING. Add it in Project Settings -> Script Properties and click Save.');
+    return;
+  }
+  var clean = String(raw).replace(/\s+/g, '');
+  Logger.log('LT_AUTH_KEY found: ' + clean.length + ' characters (should be 44), starts "' +
+             clean.slice(0, 4) + '", ends "' + clean.slice(-4) + '".');
+  Logger.log(authKey_() ? 'Key format OK.' : 'Key format is WRONG: paste it again exactly as shown by setup.');
+  Logger.log('Google time now: ' + new Date().toISOString() + ' (UTC). Compare with your laptop clock.');
 }
 
 function bytesEqual_(a, b) {
