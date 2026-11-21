@@ -96,3 +96,16 @@ test('labtrackerSelfTest reports the key without revealing it', () => {
   createBackend({}).run('labtrackerSelfTest');
   assert.match(globalThis.__log.join('\n'), /MISSING/);
 });
+
+test('dashboard token must be a string (no list/object tricks)', () => {
+  const be = fresh();
+  be.post(sign(KEY, { action: 'set_read_token', token: TOKEN }));
+  assert.equal(be.post(JSON.stringify({ action: 'dashboard', token: [TOKEN] })).error, 'unauthorized');
+  assert.equal(be.post(JSON.stringify({ action: 'dashboard', token: TOKEN })).ok, true);
+});
+
+test('script asks only for access to its own spreadsheet', async () => {
+  const fs = await import('node:fs');
+  const src = fs.readFileSync(new URL('../backend/Code.gs', import.meta.url), 'utf8');
+  assert.match(src.slice(0, 200), /@OnlyCurrentDoc/);
+});

@@ -73,7 +73,7 @@ You need:
    - Click **Deploy**.
 5. Google asks you to **authorise access**. Choose your account.
    - You'll see "Google hasn't verified this app". That's expected, because it's *your own* script and not a published app.
-   - Click **Advanced → Go to Labtracker (unsafe) → Allow**. The script can only edit the one sheet it's attached to.
+   - Click **Advanced → Go to Labtracker (unsafe) → Allow**. The script asks only for access to *this one* spreadsheet (it's marked `@OnlyCurrentDoc`), not your whole Google Drive.
 6. Copy the **Web app URL**. It starts with `https://script.google.com/macros/s/` and ends with `/exec`. Keep this tab open.
 
 ### Step 2: Install the app on your laptop
@@ -185,11 +185,16 @@ Labtracker is built for people who handle sensitive work data, so it collects as
 | Three separate keys | **Share key:** decrypts the timeline; your employer gets it inside the link. **Private key:** encrypts notes and the original times of corrected entries; only you have it. **Signing key:** proves requests came from your laptop. |
 | Dashboard link | The key sits in the part of the link after `#`, which browsers never send to any server, including GitHub and Google. Decryption happens in the browser. A separate read token, which you can revoke, controls access to the data. |
 | Dashboard page | Strict Content-Security-Policy, no third-party scripts, no cookies or tracking, refuses to load inside other sites' frames, and sends no referrer. |
-| Laptop | Keys are stored in your login keyring (GNOME Keyring), never in plain files. Local files are readable only by you. The app runs as your normal user, opens no network ports, and is launched in Python's isolated mode. |
+| Laptop | Keys are stored in your login keyring (GNOME Keyring), never in plain files. Local files are readable only by you. The app runs as your normal user, opens no network ports, is launched in Python's isolated mode, and runs the idle tool only from a system folder (never from your `PATH`). |
+| Secrets on screen | Setup and `backup-keys` wipe the screen **and the scrollback** when they finish, even after Ctrl+C or an error. A copied dashboard link is wiped from the clipboard after 60 seconds and isn't handed to clipboard-history managers. |
+| Least privilege | The Google script asks only for access to its own spreadsheet (`@OnlyCurrentDoc`). |
+| Spoofed links | The dashboard footer shows the last 6 characters of the backend it's reading from. Tell your employer what they should be, so a fake link pointing at someone else's backend stands out. The dashboard address must be `https://` and setup warns if it isn't a GitHub Pages site. |
 
 **Limits. What this does *not* protect against:**
 - Google can see *that* events arrive, *when*, and from which IP address. It can't see what they say.
-- Anyone who fully controls your laptop or your Google account. Use a strong password and two-factor authentication on your Google account.
+- **Malware running as you on your laptop.** While you're logged in, any program you run can read the login keyring without a prompt; that's how Linux keyrings work. Only install software from Mint's Software Manager or sources you trust, and don't run scripts you don't understand.
+- **Someone in your Google account.** They can't read your records, but the signing key is in Script Properties, so they could add fake entries or delete rows. Turn on two-step verification at myaccount.google.com/security.
+- **Someone in your GitHub account.** The app updates and the dashboard both come from this repository, so a malicious change could steal keys. Turn on two-factor authentication on GitHub, and protect the `main` branch (Settings → Branches → require a pull request before merging).
 - Anyone who has your dashboard link can see your timeline until you run `labtracker revoke-link`. (Someone who saved a copy of the data earlier could still read that copy.)
 - These are **self-reported** records, owned by you. They're useful and transparent, but they aren't a tamper-proof legal record.
 

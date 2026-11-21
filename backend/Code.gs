@@ -1,3 +1,6 @@
+/** @OnlyCurrentDoc */
+// ^ Limits this script's Google permission to THIS spreadsheet only (not your whole Drive).
+
 /**
  * Labtracker backend: Google Apps Script web app bound to a Google Sheet.
  *
@@ -154,8 +157,13 @@ function sheet_() {
     sh = ss.insertSheet(SHEET_NAME);
     sh.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
     sh.setFrozenRows(1);
-    // Store everything except the timestamp as plain text so Sheets never reinterprets it.
-    sh.getRange(1, 2, sh.getMaxRows(), HEADERS.length - 1).setNumberFormat('@');
+  }
+  // Store everything except the timestamp as plain text (whole columns, so rows added later
+  // are covered too) so Sheets never reinterprets a value as a number or formula.
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('LT_FORMAT_V') !== '2') {
+    sh.getRange('B:H').setNumberFormat('@');
+    props.setProperty('LT_FORMAT_V', '2');
   }
   return sh;
 }
@@ -248,7 +256,9 @@ function setReadToken_(p) {
 function dashboard_(req) {
   var props = PropertiesService.getScriptProperties();
   var token = props.getProperty('LT_READ_TOKEN');
-  if (!token || !stringsEqual_(String(req.token || ''), token)) return { ok: false, error: 'unauthorized' };
+  if (!token || typeof req.token !== 'string' || !stringsEqual_(req.token, token)) {
+    return { ok: false, error: 'unauthorized' };
+  }
 
   // Only shared rows. Private rows (notes, original values of adjusted entries)
   // and the "supersedes" links are never sent to the dashboard.

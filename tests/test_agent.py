@@ -131,6 +131,35 @@ class CryptoTests(unittest.TestCase):
         self.assertFalse(valid_webapp_url("https://script.google.com/macros/s/AKfy/../x/exec"))
 
 
+class HardeningTests(unittest.TestCase):
+    def test_idle_tool_not_taken_from_path(self):
+        from labtracker import idle
+        with tempfile.TemporaryDirectory() as d:
+            fake = Path(d) / "xprintidle"
+            fake.write_text("#!/bin/sh\necho 0\n")
+            fake.chmod(0o755)
+            old = os.environ["PATH"]
+            os.environ["PATH"] = f"{d}:{old}"
+            try:
+                self.assertNotEqual(idle.IdleSource().path, str(fake))
+            finally:
+                os.environ["PATH"] = old
+
+    def test_dashboard_url_checks(self):
+        from labtracker.cli import check_dashboard_url, dashboard_link
+        self.assertEqual(check_dashboard_url("https://dunky64.github.io/Labtracker/"), (True, ""))
+        self.assertFalse(check_dashboard_url("http://dunky64.github.io/Labtracker/")[0])
+        self.assertFalse(check_dashboard_url("https://user:pw@dunky64.github.io/")[0])
+        self.assertFalse(check_dashboard_url("javascript:alert(1)")[0])
+        ok, warning = check_dashboard_url("https://evil.example/")
+        self.assertTrue(ok)
+        self.assertIn("not a GitHub Pages site", warning)
+        cfg = {"webapp_url": "https://script.google.com/macros/s/X/exec", "user_id": "u1", "name": "T",
+               "dashboard_url": "http://evil.example/"}
+        with self.assertRaises(ValueError):
+            dashboard_link(cfg, Keys.generate())
+
+
 class TrackerTests(Base):
     def test_clock_in_out(self):
         self.tr.clock_in()
@@ -265,6 +294,12 @@ class TrackerTests(Base):
         priv = [x for x in self.tr.fetch() if x["key_id"] == "p"]
         self.assertEqual(len(priv), 2)  # the resealed original + the automatic private note
         self.assertIn("forgot", Tracker.notes(self.tr.fetch())[0]["ev"]["text"])
+
+    def test_duplicated_rows_ignored(self):
+        self.tr.clock_in()
+        self.tr.sync()
+        self.be.rows.append(dict(self.be.rows[0]))   # someone copies a row inside the Sheet
+        self.assertEqual(len(Tracker.clock_events(self.tr.fetch())), 1)
 
     def test_adjust_validation(self):
         self.tr.clock_in()

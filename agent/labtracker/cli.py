@@ -23,7 +23,28 @@ HELP = f"""Labtracker {VERSION}
 """
 
 
+def check_dashboard_url(url: str):
+    """Returns (ok, warning). The link carries your share key, so it must only go to a page you trust."""
+    parts = urllib.parse.urlsplit(url.strip())
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        return False, "The dashboard address must start with https:// and contain no user name or password."
+    if not parts.hostname.endswith(".github.io"):
+        return True, (f"{parts.hostname} is not a GitHub Pages site. Your employer's link will carry your "
+                      "timeline key to this site, so only use it if you control it.")
+    return True, ""
+
+
+def wipe_terminal():
+    """Clear the screen AND the scrollback, so keys can't be scrolled back to or screenshotted later."""
+    if sys.stdout.isatty():
+        sys.stdout.write("\033[H\033[2J\033[3J")
+        sys.stdout.flush()
+
+
 def dashboard_link(cfg: dict, keys: Keys) -> str:
+    ok, _ = check_dashboard_url(cfg["dashboard_url"])
+    if not ok:
+        raise ValueError("The saved dashboard address isn't a safe https:// address. Run `labtracker setup`.")
     frag = urllib.parse.urlencode({
         "u": cfg["webapp_url"], "k": crypto.b64e(keys.share), "t": keys.read_token,
         "id": cfg["user_id"], "n": cfg["name"],
@@ -65,6 +86,13 @@ def _require_setup(cfg, keys):
 
 
 def cmd_setup() -> int:
+    try:
+        return _setup()
+    finally:
+        wipe_terminal()  # runs even after Ctrl+C or an error, once keys may have been shown
+
+
+def _setup() -> int:
     print("\n=== Labtracker setup ===\n")
     store, cfg, keys = _load()
     kr = Keyring()
@@ -126,20 +154,30 @@ def cmd_setup() -> int:
                 print("You can run `labtracker setup` again later.")
                 return 1
 
-    cfg["dashboard_url"] = _ask("Dashboard address", cfg["dashboard_url"])
+    while True:
+        url = _ask("Dashboard address", cfg["dashboard_url"])
+        ok, warning = check_dashboard_url(url)
+        if not ok:
+            print(warning)
+            continue
+        if warning:
+            print("WARNING: " + warning)
+            if not _yes("Use it anyway?", False):
+                continue
+        break
+    cfg["dashboard_url"] = url
     store.save_config(cfg)
 
     print("\n--- Step C: back up your recovery code ---")
     print("If this laptop is lost, this code is the ONLY way to read your records again.")
     print("Store it in a password manager. Anyone with it can read and add to your records.\n")
     print("    " + keys.recovery_code(cfg["user_id"]) + "\n")
-    _ask("Press Enter once it's saved")
-    os.system("clear")  # don't leave the secrets on screen
-
+    _ask("Press Enter once it's saved. The screen will then be cleared")
+    wipe_terminal()
     print("Setup complete.\n")
-    print("Employer dashboard link (send this privately, e.g. in an encrypted message):\n")
-    print(dashboard_link(cfg, keys) + "\n")
     print("Start the tray app from the Menu (search 'Labtracker'). It also starts at login.")
+    print("Get your employer's dashboard link from the tray icon: 'Copy employer dashboard link'.")
+    _ask("\nPress Enter to finish")
     return 0
 
 
@@ -183,6 +221,10 @@ def cmd_backup() -> int:
     _require_setup(cfg, keys)
     print("Your recovery code. Keep it secret, keep it safe (a password manager is ideal):\n")
     print(keys.recovery_code(cfg["user_id"]))
+    try:
+        _ask("\nPress Enter when saved. The screen will be cleared")
+    finally:
+        wipe_terminal()
     return 0
 
 

@@ -21,6 +21,7 @@ from .tracker import Tracker, TrackerError  # noqa: E402
 
 ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "icons")
 TICK_S = 15
+CLIPBOARD_CLEAR_S = 60
 LABELS = {"clock_in": "Clocked in", "clock_out": "Clocked out", "auto_clock_out": "Auto clock-out"}
 
 
@@ -245,14 +246,28 @@ class App:
         NotesWindow(self)
 
     def on_copy_link(self):
+        try:
+            link = dashboard_link(self.cfg, self.keys)
+        except ValueError as e:
+            self.error(e)
+            return
         cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
-        cb.set_text(dashboard_link(self.cfg, self.keys), -1)
-        cb.store()
-        self.info("Dashboard link copied. Send it to your employer privately. "
+        cb.set_text(link, -1)   # deliberately no cb.store(): don't hand it to clipboard managers
+
+        def clear():
+            if cb.wait_for_text() == link:
+                cb.set_text("", -1)
+            return False
+        GLib.timeout_add_seconds(CLIPBOARD_CLEAR_S, clear)
+        self.info("Dashboard link copied. Paste it into a private message to your employer within "
+                  f"{CLIPBOARD_CLEAR_S} seconds (it's then wiped from the clipboard).\n\n"
                   "Anyone with this link can see your timeline (not your notes).")
 
     def on_open_dashboard(self):
-        webbrowser.open(dashboard_link(self.cfg, self.keys))
+        try:
+            webbrowser.open(dashboard_link(self.cfg, self.keys))
+        except ValueError as e:
+            self.error(e)
 
     def on_quit(self):
         if self.tracker.state["clocked_in"]:
