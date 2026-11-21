@@ -82,8 +82,8 @@ Open a **Terminal** (Menu → Terminal) and paste these lines one at a time:
 
 ```bash
 sudo apt install -y git
-git clone https://github.com/dunky64/labtracker.git
-cd labtracker
+git clone https://github.com/Dunky64/Labtracker.git
+cd Labtracker
 ./install.sh
 ```
 
@@ -121,7 +121,7 @@ for example by email or a work chat app.
 - If the link ever leaks, run `labtracker revoke-link`. The old link stops working and you get a new one.
 
 > **Want to host the dashboard yourself?** The link points to the shared dashboard page at
-> `https://dunky64.github.io/labtracker/` by default. The page only displays data; your keys stay in
+> `https://dunky64.github.io/Labtracker/` by default. The page only displays data; your keys stay in
 > the link and your data stays in your Google account. To use your own copy instead:
 > 1. Fork this repository.
 > 2. In your fork, go to **Settings → Pages**, choose "Deploy from a branch", then `main` and the `/docs` folder.
@@ -217,7 +217,7 @@ Run these in a terminal (as `~/.local/bin/labtracker …`, or just `labtracker �
 
 **Update the app:**
 ```bash
-cd ~/labtracker && git pull && ./install.sh
+cd ~/Labtracker && git pull && ./install.sh
 ```
 
 If [`backend/Code.gs`](backend/Code.gs) changed, also update the Google script:
@@ -226,7 +226,7 @@ If [`backend/Code.gs`](backend/Code.gs) changed, also update the Google script:
 
 Your Web App URL stays the same.
 
-**Uninstall:** `cd ~/labtracker && ./uninstall.sh`. Your records stay in your Google Sheet.
+**Uninstall:** `cd ~/Labtracker && ./uninstall.sh`. Your records stay in your Google Sheet.
 
 **Moving to a new laptop:**
 1. Install the app as in Step 2.

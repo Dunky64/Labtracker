@@ -61,7 +61,7 @@ DEFAULT_CONFIG = {
     "name": "",
     "user_id": "",
     "webapp_url": "",
-    "dashboard_url": "https://dunky64.github.io/labtracker/",
+    "dashboard_url": "https://dunky64.github.io/Labtracker/",
     "idle_minutes": 10,
     "prompt_minutes": 30,
 }
